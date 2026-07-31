@@ -1,0 +1,4 @@
+# Analysis + charts only (the extract step runs in the zeeguu-api venv instead).
+pandas>=2.0
+matplotlib>=3.7
+numpy>=1.24
