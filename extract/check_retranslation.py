@@ -21,7 +21,7 @@ Run in the api venv:
 import csv
 import os
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 try:
     from zeeguu.api.app import create_app
@@ -44,74 +44,49 @@ USER_LIMIT = int(os.environ.get("USER_LIMIT", "100000"))
 MIN_LEN = 3
 
 
-def translations(user_id, language_id):
-    """word -> (first_lookup_time, distinct-session lookup count).
+def translations(uid, lid):
+    """word -> (first_time, distinct-session click count).
 
-    Each clicked word is a lookup; multi-word selections are split into their
-    component clicks (see _common.clicked_words), so a word looked up only
-    within a phrase still counts, with its own session/time."""
-    first_time, reading_sessions = {}, defaultdict(set)
-    for word, click_time, _article_id, reading_session in clicked_words(db, user_id, language_id, min_len=MIN_LEN):
-        if word not in first_time or click_time < first_time[word]:
-            first_time[word] = click_time
-        reading_sessions[word].add(reading_session)
-    return {word: (first_time[word], len(reading_sessions[word])) for word in first_time}
-
-
-def reencountered_after_lookup(articles, word_lookups):
-    """Words met in a read article AFTER their first lookup -- i.e. the learner
-    saw them again and so had a real chance to look them up a second time. (A
-    word never met again cannot be re-looked-up, so it must not count as
-    "resolved" for free; this is the survivorship conditioning.)"""
-    reencountered = set()
-    for article in articles:
-        if not article.content or not article.read_time:
-            continue
-        forms = {w.lower() for w in split_words_from_text(article.content) if len(w) >= MIN_LEN}
-        for word in forms:
-            lookup = word_lookups.get(word)
-            if lookup is not None and article.read_time > lookup[0]:
-                reencountered.add(word)
-    return reencountered
-
-
-def tally_recurrence(word_lookups, reencountered):
-    """Classify one learner's translated words: how many recurred after their
-    first lookup, and of those how many were looked up again. Returns a Counter
-    so the per-learner tallies sum straight into the running totals."""
-    counts = Counter()
-    for word, (_first_time, lookup_count) in word_lookups.items():
-        counts["total"] += 1
-        re_looked_up = lookup_count > 1
-        if lookup_count == 1:
-            counts["once"] += 1
-        # a word "recurred" only if it got a real second chance: looked up
-        # again, or met again in a later read article
-        if re_looked_up or word in reencountered:
-            counts["recurred"] += 1
-            if re_looked_up:
-                counts["re_translated"] += 1
-    return counts
+    Each single-word click is a lookup; multi-word selections are skipped
+    (see _common.clicked_words)."""
+    ft, sessions = {}, defaultdict(set)
+    for word, click_time, _article_id, session in clicked_words(db, uid, lid, min_len=MIN_LEN):
+        if word not in ft or click_time < ft[word]:
+            ft[word] = click_time
+        sessions[word].add(session)
+    return {word: (ft[word], len(sessions[word])) for word in ft}
 
 
 def main():
     users = get_active_users(db, MIN_ARTICLES, USER_LIMIT)
-    counts = Counter()
+    total = once = recurred = re_translated = 0
 
     for i, user in enumerate(users, 1):
-        word_lookups = translations(user.id, user.language_id)
-        if not word_lookups:
+        trans = translations(user.id, user.language_id)
+        if not trans:
             continue
-        articles = read_articles(db, user.id, user.language_id)
-        reencountered = reencountered_after_lookup(articles, word_lookups)
-        counts += tally_recurrence(word_lookups, reencountered)
+        arts = read_articles(db, user.id, user.language_id)
+        recurred_after = set()
+        for a in arts:
+            if not a.content or not a.read_time:
+                continue
+            forms = {w.lower() for w in split_words_from_text(a.content) if len(w) >= MIN_LEN}
+            for w in forms:
+                tv = trans.get(w)
+                if tv is not None and a.read_time > tv[0]:
+                    recurred_after.add(w)
+        for w, (ft, cnt) in trans.items():
+            total += 1
+            if cnt == 1:
+                once += 1
+            retr = cnt > 1
+            rec = retr or (w in recurred_after)
+            if rec:
+                recurred += 1
+                if retr:
+                    re_translated += 1
         if i % 25 == 0:
             print(f"  ...{i}/{len(users)}", flush=True)
-
-    total = counts["total"]
-    once = counts["once"]
-    recurred = counts["recurred"]
-    re_translated = counts["re_translated"]
 
     print(f"\ntranslated words:                 {total:,}")
     print(f"  looked up exactly once:         {once:,}  ({100*once/total:.1f}%)   <- the survivorship-inflated figure")
@@ -127,11 +102,11 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     out_csv = os.path.join(here, "..", "data", "retranslation.csv")
     with open(out_csv, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["translated_words", "recurred_after_first_lookup", "re_translated",
-                         "conditioned_retranslation_pct", "resolved_pct"])
-        writer.writerow([total, recurred, re_translated,
-                         f"{100*re_translated/recurred:.1f}", f"{100*(recurred-re_translated)/recurred:.1f}"])
+        wr = csv.writer(f)
+        wr.writerow(["translated_words", "recurred_after_first_lookup", "re_translated",
+                     "conditioned_retranslation_pct", "resolved_pct"])
+        wr.writerow([total, recurred, re_translated,
+                     f"{100*re_translated/recurred:.1f}", f"{100*(recurred-re_translated)/recurred:.1f}"])
     print(f"\nWrote {out_csv}")
 
 

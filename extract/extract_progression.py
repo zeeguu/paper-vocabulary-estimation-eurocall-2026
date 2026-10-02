@@ -10,10 +10,10 @@ frequency lists via `wordstats` and the api tokenizer). It writes an anonymised
 Method (see paper §4.2):
 
   For each learner we replay their history in time order. An "encounter" of a
-  word = a plausibly-read article (duration > 30s) that contains that word form
-  (counted once per article). A "translation" = an explicit click on the word;
-  a multi-word selection is split into its component clicks, each a lookup of
-  that word (see _common.clicked_words).
+  word = a plausibly-read article (the paper's §4.1 filter) that contains that
+  word form (counted once per article). A "translation" = an explicit
+  single-word click; multi-word selections are not split, and their component
+  words' encounters in that article count neither way (see _common).
 
   P(know) per word is an online logistic evidence-accumulation model. We replay
   events in time order, keeping a running log-odds S per word:
@@ -70,7 +70,8 @@ from zeeguu.core.util.text import split_words_from_text
 from wordstats import LanguageInfo
 from nltk.stem import SnowballStemmer
 from sqlalchemy import text
-from _common import get_active_users, read_articles, clicked_words
+from _common import (get_active_users, read_articles, clicked_words,
+                     mwe_component_encounters)
 
 app = create_app()
 app.app_context().push()
@@ -124,8 +125,8 @@ CEFR_BANDS = [(1500, "A1"), (2500, "A2"), (3250, "B1"), (3750, "B2"), (4500, "C1
 def clicked_lookups(user_id, language_id, reduce):
     """(stem, time, article_id) lookups, one per (stem, reading session).
 
-    Each explicitly clicked word is a lookup; a multi-word selection is split
-    into its component clicks (see _common.clicked_words). Repeated clicks of
+    Each explicit single-word click is a lookup; multi-word selections are
+    skipped (see _common.clicked_words). Repeated clicks of
     the same stem within one reading session count once, so a looked-up
     encounter is penalised exactly once (otherwise -(ALPHA+BETA) fires per click
     but the article added +ALPHA only once).
@@ -222,6 +223,11 @@ def process_user(learner_id, user, model):
     reduce, bands, top_cap, buckets = model
     articles = read_articles(db, user.id, user.language_id)
     lookups = clicked_lookups(user.id, user.language_id, reduce)
+    # (stem, article) encounters a multi-word selection makes ambiguous: the
+    # learner asked for help with a phrase containing this word, so reading it
+    # "cleanly" there is not evidence of knowing it (see _common).
+    ambiguous = {(reduce(w), aid)
+                 for w, aid in mwe_component_encounters(db, user.id, user.language_id)}
 
     # Only lookups made in a READ article are evidence: those articles are the
     # evidence base, and the -(ALPHA+BETA) update below cancels an +ALPHA that
@@ -236,6 +242,7 @@ def process_user(learner_id, user, model):
         if not article.content or not article.read_time:
             continue
         stems = {reduce(w.lower()) for w in split_words_from_text(article.content)}
+        stems -= {s for s in stems if (s, article.id) in ambiguous}
         events.append((article.read_time, "article", stems))
     for stem, click_time, article_id in lookups:
         if article_id not in read_ids:
@@ -245,6 +252,7 @@ def process_user(learner_id, user, model):
 
     S = defaultdict(float)   # running (recency-decayed) log-odds per stem
     encountered = set()
+    looked_up = defaultdict(int)   # stem -> lookups so far (one per reading session)
     articles_seen = 0
     rows = []
     cur_month = None
@@ -286,9 +294,21 @@ def process_user(learner_id, user, model):
                     covered += known_rate * len(inband)
                     seen_any = True
             coverage[n] = round(100.0 * covered / n, 1) if seen_any else 0.0
+        # Discovery vs acquisition (reviewer question: is the curve vocabulary
+        # growth, or more observation of words already known?). Over the known
+        # stems actually observed in the top TOP_VOCAB_CAP (no extrapolation):
+        # never looked up so far -> discovered prior knowledge; looked up at
+        # some point and since read cleanly enough to count as known -> a
+        # plausible acquisition. Neither is clean (incidental learning needs no
+        # lookup; a lookup can be a misclick), but the split is principled.
+        known_obs = known & top_cap
+        acquired = {st for st in known_obs if looked_up[st] > 0}
+        # the stronger cases: looked up in two or more sessions before becoming known
+        acquired_2plus = sum(1 for st in acquired if looked_up[st] >= 2)
         rows.append([
             learner_id, user.language, month, articles_seen, len(encountered), words_known,
             coverage[100], coverage[500], coverage[1000], cefr_for(words_known),
+            len(known_obs), len(known_obs) - len(acquired), len(acquired), acquired_2plus,
         ])
 
     for event_time, kind, payload in events:
@@ -308,6 +328,7 @@ def process_user(learner_id, user, model):
             # The article event above already added +ALPHA to this stem, so we
             # cancel it (-ALPHA) and apply the penalty (-BETA) => -(ALPHA+BETA).
             S[payload] = DECAY * S[payload] - (ALPHA + BETA)
+            looked_up[payload] += 1
     if cur_month is not None:
         snapshot(cur_month)
     return rows
@@ -323,6 +344,8 @@ def main():
             "learner_id", "language", "month", "articles_cumulative",
             "distinct_words_encountered", "words_known_est",
             "top100_cov", "top500_cov", "top1000_cov", "cefr",
+            "known_observed", "known_never_looked_up", "known_after_lookup",
+            "known_after_2plus_lookups",
         ])
         for i, user in enumerate(users, start=1):
             learner_id = f"L{i:02d}"

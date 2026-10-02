@@ -19,15 +19,25 @@ SHA-256 `d8c0abaa577be62f9d6f4dbd90a87a700860efce050865dfd4c234f67b4c19f5`), hel
 privately (it contains personal data). Default `MIN_LANG_LEARNERS`=10 → 324
 learner-language profiles across fr/nl/en/de/da.
 
-Unit conventions: a "word" is a Snowball stem (near-lemma); an "encounter" is a
-read article (≥ 30 s and ≤ 300 wpm) containing that stem, counted once per
-article; a "lookup"/"translation" is an explicit click, with multi-word
-selections split into their component clicks. See `extract/_common.py` and
-`extract/extract_progression.py` for the exact definitions.
+Unit conventions:
+
+- a "word" in `monthly_progression.csv` is a Snowball stem (near-lemma), the
+  unit P(known) is scored on; `translation_timing.csv`, `threshold_confidence.csv`
+  and `retranslation.csv` count (learner, word form) pairs;
+- an "encounter" is a read article (at least 30 s and at most 300 wpm, time summed
+  over the learner's sessions on it) containing the word, counted once per article;
+- a "lookup"/"translation" is an explicit single-word click made while reading.
+  Multi-word selections are not split into component lookups, and their
+  component words count neither as lookups nor as clean encounters in that
+  article. Lookups from exercises, article previews and practice example
+  sentences are excluded. (Corrected 2026-09-09.)
+
+See `extract/_common.py` and `extract/extract_progression.py` for the exact
+definitions.
 
 ---
 
-## `translation_timing.csv` — §5.2 "When a Word Is Translated, How Early?"
+## `translation_timing.csv` — §5.1 "When a Word Is Translated, How Early?" (Table 2)
 
 For each translated word, which article containing it holds its *first*
 translation. One row per language plus an `ALL` row. Produced by
@@ -40,13 +50,15 @@ translation. One row per language plus an `ALL` row. Produced by
 | `by_1st_pct` | % whose first translation fell on the **1st** article containing the word |
 | `by_2nd_pct` | cumulative % translated **by the 2nd** article (≤ 1 clean article before) |
 | `by_3rd_pct` | cumulative % translated **by the 3rd** article |
+| `by_4th_pct` | cumulative % translated **by the 4th** article |
+| `by_5th_pct` | cumulative % translated **by the 5th** article |
 | `seen_5plus_pct` | % seen in **5+** articles before their first translation |
 
 ---
 
 ## `threshold_confidence.csv` — §6.1 "How Many Clean Encounters Make a Word Known?"
 
-The confidence curve: of words seen in *N*+ articles without translation **and
+The non-lookup-rate curve (Table 4): of words seen in *N*+ articles without translation **and
 then encountered again**, what share is never translated afterward. One row per
 (language, N); `language = ALL` is the pooled curve the paper reports. Produced
 by `extract/extract_word_thresholds.py`. Conditioned on a later encounter to
@@ -58,16 +70,16 @@ remove survivorship inflation (see `extract/check_survivorship.py`).
 | `threshold_N` | number of clean (untranslated) encounters, *N* |
 | `reached` | (learner, word) pairs reaching *N* clean encounters and recurring afterward |
 | `failures` | of those, how many were translated later (the rule was wrong) |
-| `confidence_pct` | `(reached − failures) / reached × 100` — confidence the word is known |
+| `confidence_pct` | `(reached − failures) / reached × 100` — the paper's *non-lookup rate* (behavioral consistency, not tested knowledge) |
 
 ---
 
-## `monthly_progression.csv` — §5.1 sample, §5.3 coverage, §5.4 progression, Figure 1
+## `monthly_progression.csv` — §4.5 sample, §5.2 coverage, §5.3 monthly estimates, Figure 1
 
 One row per (learner, month): the P(known) model (`extract/extract_progression.py`,
-paper §4.2) replayed over each learner's history, snapshotted monthly. §5.1's
-sample counts, §5.3's coverage table, §5.4's figures, and Figure 1 all derive
-from this file.
+paper §4.2) replayed over each learner's history, snapshotted monthly. §4.5's
+sample counts, §5.2's coverage table (Table 3), §5.3's figures, and Figure 1 all
+derive from this file.
 
 | column | meaning |
 |---|---|
@@ -81,13 +93,17 @@ from this file.
 | `top500_cov` | % of the 500 most-frequent stems estimated known |
 | `top1000_cov` | % of the 1,000 most-frequent stems estimated known |
 | `cefr` | indicative CEFR level mapped from `words_known_est` (Milton & Alexiou 2009 bands; a floor) |
+| `known_observed` | known stems actually observed among the 5,000 most frequent (no extrapolation) |
+| `known_never_looked_up` | of those, never looked up so far (prior knowledge, or learned without a lookup) |
+| `known_after_lookup` | of those, looked up at some point before becoming known (candidate learning; Figure 1's darker band) |
+| `known_after_2plus_lookups` | of `known_after_lookup`, looked up in two or more reading sessions |
 
 ---
 
-## `retranslation.csv` — §6.2 "How Reliable Is a Single Lookup or Clean Pass?"
+## `retranslation.csv` — §6.2 "How Reliable Is a Single Lookup?"
 
 A single summary row: how often a looked-up word, once met again, is looked up a
-*second* time (the conditioned re-translation rate behind §6.2's "35%"). Produced
+*second* time (the conditioned re-translation rate behind §6.2's "23%"). Produced
 by `extract/check_retranslation.py`.
 
 | column | meaning |
@@ -95,5 +111,5 @@ by `extract/check_retranslation.py`.
 | `translated_words` | total (learner, word) pairs ever translated |
 | `recurred_after_first_lookup` | of those, how many were met again after the first lookup |
 | `re_translated` | of the recurred, how many were looked up again |
-| `conditioned_retranslation_pct` | `re_translated / recurred × 100` (paper's "35%") |
+| `conditioned_retranslation_pct` | `re_translated / recurred × 100` (paper's "23%") |
 | `resolved_pct` | `100 − conditioned_retranslation_pct` — one lookup "resolves" the word |

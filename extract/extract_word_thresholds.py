@@ -4,14 +4,14 @@ Compute the confidence-vs-threshold curve for the "seen N times => known" rule
 (paper §6.1), from real data.
 
 For every (learner, word) pair over the learner's full reading history we derive:
-  E (encounters)      = distinct read articles (duration>30s) containing the word form
+  E (encounters)      = distinct read articles (the paper's §4.1 filter) containing the word form
   b (articles_before) = articles containing the word read BEFORE its first translation
                         (only defined if the word was ever translated)
 
-A "translation" is any explicit click on the word, including a click made while
-extending a multi-word selection: we split such selections into their component
-clicks (see _common.clicked_words), so a word looked up only inside a phrase
-counts as translated rather than as a clean survivor.
+A "translation" is an explicit single-word click made while reading. Multi-word
+selections are NOT split into component look-ups (see _common.clicked_words);
+the component words' encounters in that article are instead dropped from the
+clean side too (mwe_component_encounters), so they count neither way.
 
 A word "reaches N untranslated encounters" if it was seen in N articles without
 having been translated yet: (never translated and E >= N) or (translated and b >= N).
@@ -65,7 +65,8 @@ except ImportError:
 from zeeguu.core.model import db
 from zeeguu.core.util.text import split_words_from_text
 from sqlalchemy import text
-from _common import get_active_users, read_articles, clicked_words
+from _common import (get_active_users, read_articles, clicked_words,
+                     mwe_component_encounters)
 
 app = create_app()
 app.app_context().push()
@@ -81,8 +82,8 @@ THRESHOLDS = [1, 2, 3, 4, 5, 7, 10, 15, 20]
 
 
 def first_translations(uid, lid):
-    """word -> (earliest click time, the article it was clicked in), standalone
-    or within a split multi-word selection (see _common.clicked_words). The
+    """word -> (earliest click time, the article it was clicked in), from
+    single-word look-ups only (see _common.clicked_words). The
     article is returned so per_word_evidence can EXCLUDE it from the
     before-count: the word was looked up there, so that article is not a clean
     (untranslated) encounter."""
@@ -105,6 +106,8 @@ def per_word_evidence(user):
     """
     articles = read_articles(db, user.id, user.language_id)
     first_trans = first_translations(user.id, user.language_id)
+    # encounters made ambiguous by a multi-word selection contribute no evidence
+    ambiguous = mwe_component_encounters(db, user.id, user.language_id, min_len=MIN_LEN)
 
     encounter_count = defaultdict(int)
     before_count = defaultdict(int)
@@ -113,6 +116,8 @@ def per_word_evidence(user):
             continue
         forms = {w.lower() for w in split_words_from_text(article.content) if len(w) >= MIN_LEN}
         for word in forms:
+            if (word, article.id) in ambiguous:
+                continue
             encounter_count[word] += 1
             lookup = first_trans.get(word)
             if lookup is not None and article.read_time < lookup[0] and article.id != lookup[1]:
@@ -121,59 +126,6 @@ def per_word_evidence(user):
     for word in set(encounter_count) | set(first_trans):
         translated = word in first_trans
         yield encounter_count.get(word, 0), (before_count.get(word, 0) if translated else None), translated
-
-
-def _pct(t, k):
-    return 100.0 * t[k] / t["n"] if t["n"] else float("nan")
-
-
-def write_confidence_csv(reached, failed):
-    """§6.1 confidence: for each language and threshold N, how often a word seen
-    in N+ articles WITHOUT translation stayed untranslated. lang '' = ALL."""
-    os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
-    with open(OUT_CSV, "w", newline="") as f:
-        wr = csv.writer(f)
-        wr.writerow(["language", "threshold_N", "reached", "failures", "confidence_pct"])
-        for lang in [""] + sorted(k for k in reached if k):
-            for N in THRESHOLDS:
-                d = reached[lang][N]
-                fl = failed[lang][N]
-                conf = 100.0 * (d - fl) / d if d else float("nan")
-                wr.writerow([lang or "ALL", N, d, fl, f"{conf:.1f}"])
-
-
-def write_timing_csv(timing):
-    """§5.2 timing: over translated words, how soon the first translation
-    happened (by the 1st/2nd/3rd article, or after 5+ prior encounters).
-    Languages by descending word count; lang '' = ALL."""
-    with open(TIMING_CSV, "w", newline="") as f:
-        wr = csv.writer(f)
-        wr.writerow(["language", "n_translated", "by_1st_pct", "by_2nd_pct",
-                     "by_3rd_pct", "seen_5plus_pct"])
-        langs = sorted((k for k in timing if k), key=lambda k: -timing[k]["n"])
-        for lang in [""] + langs:
-            t = timing[lang]
-            wr.writerow([lang or "ALL", t["n"], f"{_pct(t,'by1'):.1f}",
-                         f"{_pct(t,'by2'):.1f}", f"{_pct(t,'by3'):.1f}",
-                         f"{_pct(t,'seen5'):.1f}"])
-
-
-def print_summary(reached, failed, timing):
-    """Echo the two ALL-learner tables to the console (§6.1 confidence, §5.2 timing)."""
-    print("\nConfidence that a word seen in N+ articles WITHOUT translation is "
-          "never translated (ALL learners):")
-    print(f"  {'N':>3}  {'reached':>9}  {'failures':>9}  {'confidence':>10}")
-    for N in THRESHOLDS:
-        d, fl = reached[""][N], failed[""][N]
-        conf = 100.0 * (d - fl) / d if d else 0
-        print(f"  {N:>3}  {d:>9,}  {fl:>9,}  {conf:>9.1f}%")
-
-    print("\nWhen do translations occur? (tokenised; §5.2)")
-    print(f"  {'lang':>5} {'n':>7} {'by1st':>6} {'by2nd':>6} {'by3rd':>6} {'5+':>5}")
-    for lang in ["", *sorted((k for k in timing if k), key=lambda k: -timing[k]["n"])]:
-        t = timing[lang]
-        print(f"  {lang or 'ALL':>5} {t['n']:>7,} {_pct(t,'by1'):6.1f} "
-              f"{_pct(t,'by2'):6.1f} {_pct(t,'by3'):6.1f} {_pct(t,'seen5'):5.1f}")
 
 
 def main():
@@ -185,7 +137,7 @@ def main():
     failed = defaultdict(lambda: defaultdict(int))
     # §5.2 timing: over translated words, the distribution of articles_before
     # (articles that contained the word before its first translation). lang '' = ALL.
-    timing = defaultdict(lambda: {"n": 0, "by1": 0, "by2": 0, "by3": 0, "seen5": 0})
+    timing = defaultdict(lambda: {"n": 0, "by1": 0, "by2": 0, "by3": 0, "by4": 0, "by5": 0, "seen5": 0})
 
     for i, user in enumerate(users, 1):
         lang = user.language
@@ -197,6 +149,8 @@ def main():
                     t["by1"] += articles_before == 0   # first translation by the 1st article
                     t["by2"] += articles_before <= 1   # ... by the 2nd
                     t["by3"] += articles_before <= 2   # ... by the 3rd
+                    t["by4"] += articles_before <= 3   # ... by the 4th
+                    t["by5"] += articles_before <= 4   # ... by the 5th (= 100 - seen5)
                     t["seen5"] += articles_before >= 5 # seen in 5+ articles beforehand
             for N in THRESHOLDS:
                 # Condition on a later encounter (see docstring): never-translated
@@ -211,9 +165,48 @@ def main():
         if i % 25 == 0:
             print(f"  ...{i}/{len(users)} learners")
 
-    write_confidence_csv(reached, failed)
-    write_timing_csv(timing)
-    print_summary(reached, failed, timing)
+    os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
+    with open(OUT_CSV, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["language", "threshold_N", "reached", "failures", "confidence_pct"])
+        for lang in [""] + sorted(k for k in reached if k):
+            for N in THRESHOLDS:
+                d = reached[lang][N]
+                fl = failed[lang][N]
+                conf = 100.0 * (d - fl) / d if d else float("nan")
+                wr.writerow([lang or "ALL", N, d, fl, f"{conf:.1f}"])
+
+    # §5.2 timing table (tokenised), languages by descending word count.
+    def pct(t, k):
+        return 100.0 * t[k] / t["n"] if t["n"] else float("nan")
+
+    with open(TIMING_CSV, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["language", "n_translated", "by_1st_pct", "by_2nd_pct",
+                     "by_3rd_pct", "seen_5plus_pct", "by_4th_pct", "by_5th_pct"])
+        langs = sorted((k for k in timing if k), key=lambda k: -timing[k]["n"])
+        for lang in [""] + langs:
+            t = timing[lang]
+            wr.writerow([lang or "ALL", t["n"], f"{pct(t,'by1'):.1f}",
+                         f"{pct(t,'by2'):.1f}", f"{pct(t,'by3'):.1f}",
+                         f"{pct(t,'seen5'):.1f}", f"{pct(t,'by4'):.1f}",
+                         f"{pct(t,'by5'):.1f}"])
+
+    # readable tables (ALL)
+    print("\nConfidence that a word seen in N+ articles WITHOUT translation is "
+          "never translated (ALL learners):")
+    print(f"  {'N':>3}  {'reached':>9}  {'failures':>9}  {'confidence':>10}")
+    for N in THRESHOLDS:
+        d, fl = reached[""][N], failed[""][N]
+        conf = 100.0 * (d - fl) / d if d else 0
+        print(f"  {N:>3}  {d:>9,}  {fl:>9,}  {conf:>9.1f}%")
+
+    print("\nWhen do translations occur? (tokenised; §5.2)")
+    print(f"  {'lang':>5} {'n':>7} {'by1st':>6} {'by2nd':>6} {'by3rd':>6} {'5+':>5}")
+    for lang in ["", *sorted((k for k in timing if k), key=lambda k: -timing[k]["n"])]:
+        t = timing[lang]
+        print(f"  {lang or 'ALL':>5} {t['n']:>7,} {pct(t,'by1'):6.1f} "
+              f"{pct(t,'by2'):6.1f} {pct(t,'by3'):6.1f} {pct(t,'seen5'):5.1f}")
     print(f"\nWrote {OUT_CSV}\nWrote {TIMING_CSV}")
 
 

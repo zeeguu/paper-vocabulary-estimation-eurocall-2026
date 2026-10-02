@@ -6,30 +6,35 @@ behavior"* (EuroCALL 2026).
 **Idea.** On a reading platform with one-click translation, learners reveal not
 only the words they *don't* know (by looking them up) but also, over time, the
 ones they *do*: a word met repeatedly across articles without ever being looked
-up is evidence of prior knowledge. This repository validates that signal and
-shows how per-word estimates aggregate into a vocabulary-growth curve. Data comes
+up is evidence that it is known. This repository validates that signal and
+shows how per-word estimates aggregate into a continuously updated vocabulary
+estimate. Data comes
 from [Zeeguu](https://github.com/zeeguu/api), an open-source reading platform.
+
+The camera-ready paper is in [`paper/`](paper/eurocall-2026-vocabulary-estimation.pdf).
 
 ## Layout
 
 ```
 extract/   _common.py                     shared queries + the "read article" definition
-           extract_word_thresholds.py     DB -> translation_timing.csv, threshold_confidence.csv  (§5.2, §6.1)
-           extract_progression.py         DB -> monthly_progression.csv                           (§5.1, §5.3, §5.4, Fig 1)
+           extract_word_thresholds.py     DB -> translation_timing.csv, threshold_confidence.csv  (§5.1, §6.1)
+           extract_progression.py         DB -> monthly_progression.csv                           (§4.5, §5.2, §5.3, Fig 1)
            check_retranslation.py         DB -> retranslation.csv                                  (§6.2)
            check_survivorship.py          robustness of the §6.1 curve to survivorship inflation
-analysis/  reproduce_paper_numbers.py     CSVs -> every §5-§6 table and number   (no DB)
-           generate_progression_charts.py monthly_progression.csv -> figures/    (no DB)
+analysis/  reproduce_paper_numbers.py     CSVs -> every §4.5-§6 table and number          (no DB)
+           generate_progression_charts.py monthly_progression.csv -> figures/ (Figure 1)  (no DB)
+           decompose_growth.py            known words split by lookup history (§5.3)     (no DB)
 data/      the four CSVs + data/README.md (column-by-column data dictionary)
+paper/     the camera-ready paper (PDF)
 ```
 
 ## Reproducing
 
-**1. From the shipped CSVs — no database.** Everything in §5–§6 regenerates from
+**1. From the shipped CSVs — no database.** Everything in §4.5–§6 regenerates from
 the anonymised CSVs:
 
 ```bash
-python analysis/reproduce_paper_numbers.py          # stdlib only; prints every §5-§6 table/number
+python analysis/reproduce_paper_numbers.py          # stdlib only; prints every §4.5-§6 table/number
 python -m venv .venv && source .venv/bin/activate   # for the chart (pandas + matplotlib)
 pip install -r requirements.txt
 python analysis/generate_progression_charts.py      # writes Figure 1 to figures/
@@ -56,16 +61,24 @@ article text are exported.**
 
 Over 322 learners (324 learner–language profiles):
 
-- **Lookups come early (§5.2).** 71% of translated words are looked up on the very
-  first article containing them, and 90% by the second. So sustained
-  non-translation is a meaningful signal.
-- **Clean encounters signal knowledge (§6.1).** Of words seen once without a lookup
-  and then met again, ~87% are never translated afterward; a second clean
-  encounter lifts this to ~90%, essentially flat out to twenty. We count a stem
-  known at three clean encounters, a conservative margin.
-- **Single events are noisy (§6.2).** Of looked-up words that recur, 36% are looked
-  up a *second* time — so one lookup "resolves" a word only ~64% of the time, and
-  neither a lone lookup nor a lone clean pass is reliable on its own.
+- **Lookups come early (§5.1).** 74% of looked-up words are looked up in the very
+  first article containing them, 92% by the second and 98% by the fifth. So
+  sustained non-lookup is a meaningful signal.
+- **Clean encounters predict no later lookup (§6.1).** Of words met once without a
+  lookup and then met again, 92% are never looked up afterward; the rate rises to
+  95% after two clean encounters, 96% after three and 98% after twenty. This
+  *non-lookup rate* measures behavioral consistency, not knowledge tested
+  independently. A stem counts as known at three clean encounters.
+- **A single lookup is noisy (§6.2).** Of looked-up words that recur, 23% are
+  looked up a second time.
+- **Growth is not the same as learning (§5.3).** Only about 4% of known words were
+  ever looked up; for the rest, the model cannot tell prior knowledge from words
+  learned without help.
+
+The lookup definition was corrected on 2026-09-09 (multi-word selections are no
+longer split into component lookups, and lookups made outside reading are
+excluded); the data and numbers here follow the corrected definition, as does
+the camera-ready paper.
 
 ## License
 

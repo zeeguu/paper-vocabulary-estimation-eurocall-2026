@@ -46,8 +46,8 @@ THRESHOLDS = [1, 2, 3, 4, 5, 7, 10, 15, 20]
 
 
 def first_translations(uid, lid):
-    """word -> (earliest click, article it was clicked in), splitting multi-word
-    selections (see _common.clicked_words). The article is returned so the
+    """word -> (earliest click, article it was clicked in), from single-word
+    look-ups only (see _common.clicked_words). The article is returned so the
     lookup's own article can be excluded from the before-count."""
     first_trans = {}
     for word, click_time, article_id, _session in clicked_words(db, uid, lid, min_len=MIN_LEN):
