@@ -175,11 +175,13 @@ def clicked_words(db, user_id, language_id, min_len=1):
     WHAT COUNTS AS A LOOK-UP (corrected 2026-09-09; see
     _meta/mwe-bookmark-provenance.md):
 
-    * Only look-ups made WHILE READING. `translation_source` distinguishes
-      'reading' from 'exercise' and 'article_preview', but is not sufficient on
-      its own: the practice UI writes ExampleSentence rows (context type 9) that
-      carry translation_source = 'reading' and no reading session. Those are
-      excluded explicitly. Requiring a reading session instead was rejected --
+    * Only look-ups made WHILE READING (translation_source = 'reading'). Until
+      3 Oct 2026 the API also stamped 'reading' on bookmarks it pre-created for
+      exercise example sentences (context type 9, no reading session) and on
+      words learners typed in themselves; zeeguu/api#789 gave those their own
+      values and relabelled them in production. Data taken before that date
+      still carries the old labels, so type-9 rows are excluded explicitly.
+      Requiring a reading session instead was rejected --
       sessions were not recorded before 2019, which would silently delete the
       earliest two years of history.
 
